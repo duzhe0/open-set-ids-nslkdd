@@ -174,29 +174,35 @@ def main():
     av_val, logits_val = get_activations(clf, Xtr_val)
     av_test, logits_test = get_activations(clf, Xte)
 
-    # === OOD 主信号：马氏距离（嵌入空间）===
-    # 过拟合分类器 softmax 对 OOD 不敏感；改用 penultimate embedding 的几何结构。
-    print("\n=== 拟合马氏距离 OOD ===")
-    from ood import fit_mahalanobis, mahalanobis_scores
-    mah_fit = fit_mahalanobis(av_train, ytr_train, n_classes, reg=1e-2)
-    mah_val = mahalanobis_scores(av_val, mah_fit)
-    mah_test = mahalanobis_scores(av_test, mah_fit)
+    # === OOD 主信号：AE 重构误差（离线搜索确认最强）===
+    # 马氏/OOD头/OpenMax 经搜索确认无用(权重0)，默认跳过省时，FULL_OOD=1 可开对照。
+    import os as _os
+    FULL_OOD = _os.environ.get("FULL_OOD", "0") == "1"
 
-    # === OOD 头：生成式伪未知增强（突破距离类OOD天花板）===
-    # 距离/重构类OOD检不出 saint(≈satan)、snmpguess(≈guess_passwd) 这类重叠未知。
-    # 用已知类嵌入生成伪未知（类间插值+离群），训二分类头，让类间空隙=未知区域。
-    print("\n=== 训练 OOD 头（生成式伪未知）===")
-    from ood_head import train_ood_head, ood_head_scores
-    ood_model = train_ood_head(av_train, ytr_train, n_classes, DEVICE, epochs=25)
-    ood_val = ood_head_scores(ood_model, av_val)
-    ood_test = ood_head_scores(ood_model, av_test)
+    if FULL_OOD:
+        print("\n=== [FULL_OOD] 拟合马氏距离 ===")
+        from ood import fit_mahalanobis, mahalanobis_scores
+        mah_fit = fit_mahalanobis(av_train, ytr_train, n_classes, reg=1e-2)
+        mah_val = mahalanobis_scores(av_val, mah_fit)
+        mah_test = mahalanobis_scores(av_test, mah_fit)
+        print("=== [FULL_OOD] 训练 OOD 头 ===")
+        from ood_head import train_ood_head, ood_head_scores
+        ood_model = train_ood_head(av_train, ytr_train, n_classes, DEVICE, epochs=25)
+        ood_val = ood_head_scores(ood_model, av_val)
+        ood_test = ood_head_scores(ood_model, av_test)
+    else:
+        N = len(av_val); Nt = len(av_test)
+        mah_val = np.zeros(N); mah_test = np.zeros(Nt)
+        ood_val = np.zeros(N); ood_test = np.zeros(Nt)
 
     # === 辅助信号 ===
-    # OpenMax（保留作辅助，弱权重）
-    print("=== 拟合 OpenMax (Weibull, 辅助) ===")
-    mavs, weibulls = fit_weibull(av_train, ytr_train, known_classes, tail_size=25)
-    om_val = openmax_predict(av_val, logits_val, mavs, weibulls, alpha=10)
-    om_test = openmax_predict(av_test, logits_test, mavs, weibulls, alpha=10)
+    if FULL_OOD:
+        print("=== [FULL_OOD] 拟合 OpenMax (Weibull) ===")
+        mavs, weibulls = fit_weibull(av_train, ytr_train, known_classes, tail_size=25)
+        om_val = openmax_predict(av_val, logits_val, mavs, weibulls, alpha=10)
+        om_test = openmax_predict(av_test, logits_test, mavs, weibulls, alpha=10)
+    else:
+        om_val = np.zeros((len(av_val), 2)); om_test = np.zeros((len(av_test), 2))
 
     def softmax_max(logits):
         p = np.exp(logits - logits.max(1, keepdims=True))
@@ -213,14 +219,16 @@ def main():
         x = (a - lo) / (hi - lo + 1e-9)
         return np.clip(x, 0, 1)
 
-    # 融合：多信号互补。OOD头对类间空隙未知强但伤类内重叠，故不作主导；
-    # 马氏(类间)+AE(mailbomb类)+OOD头(processtable类)+softmax(自信度) 互补。
-    W = {"mah": 0.32, "ood": 0.28, "err": 0.20, "smax": 0.12, "om": 0.08}
-    fuse_val = (W["mah"]*norm01(mah_val) + W["ood"]*norm01(ood_val)
-                + W["err"]*norm01(err_val) + W["smax"]*norm01(1-smax_val)
+    # 融合权重：离线网格搜索确定（search_fine.py）。
+    # 单信号 F1: err 0.627 >> mah 0.513 > ood 0.486 > smax 0.464 > om 0.000
+    # 最优: AE误差0.818 + softmax不自信0.182。马氏/OOD头/OpenMax 建立在分类器
+    # 嵌入上，被分类目标(把未知拉近已知)拖累，加入不改善甚至有害，故权重0。
+    W = {"err": 0.818, "smax": 0.182, "mah": 0.0, "ood": 0.0, "om": 0.0}
+    fuse_val = (W["err"]*norm01(err_val) + W["smax"]*norm01(1-smax_val)
+                + W["mah"]*norm01(mah_val) + W["ood"]*norm01(ood_val)
                 + W["om"]*norm01(om_val[:, -1]))
-    fuse_test = (W["mah"]*norm01(mah_test) + W["ood"]*norm01(ood_test)
-                 + W["err"]*norm01(err_test) + W["smax"]*norm01(1-smax_test)
+    fuse_test = (W["err"]*norm01(err_test) + W["smax"]*norm01(1-smax_test)
+                 + W["mah"]*norm01(mah_test) + W["ood"]*norm01(ood_test)
                  + W["om"]*norm01(om_test[:, -1]))
 
     # === 阈值标定：马氏距离 χ² 统计 + 验证集 TNR 校准 ===
