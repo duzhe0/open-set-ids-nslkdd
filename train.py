@@ -182,6 +182,15 @@ def main():
     mah_val = mahalanobis_scores(av_val, mah_fit)
     mah_test = mahalanobis_scores(av_test, mah_fit)
 
+    # === OOD 头：生成式伪未知增强（突破距离类OOD天花板）===
+    # 距离/重构类OOD检不出 saint(≈satan)、snmpguess(≈guess_passwd) 这类重叠未知。
+    # 用已知类嵌入生成伪未知（类间插值+离群），训二分类头，让类间空隙=未知区域。
+    print("\n=== 训练 OOD 头（生成式伪未知）===")
+    from ood_head import train_ood_head, ood_head_scores
+    ood_model = train_ood_head(av_train, ytr_train, n_classes, DEVICE, epochs=25)
+    ood_val = ood_head_scores(ood_model, av_val)
+    ood_test = ood_head_scores(ood_model, av_test)
+
     # === 辅助信号 ===
     # OpenMax（保留作辅助，弱权重）
     print("=== 拟合 OpenMax (Weibull, 辅助) ===")
@@ -204,12 +213,14 @@ def main():
         x = (a - lo) / (hi - lo + 1e-9)
         return np.clip(x, 0, 1)
 
-    # 融合：马氏距离为主，softmax 不自信 + AE 误差为辅，OpenMax 极弱
-    W = {"mah": 0.65, "smax": 0.18, "err": 0.12, "om": 0.05}
-    fuse_val = (W["mah"]*norm01(mah_val) + W["smax"]*norm01(1-smax_val)
-                + W["err"]*norm01(err_val) + W["om"]*norm01(om_val[:, -1]))
-    fuse_test = (W["mah"]*norm01(mah_test) + W["smax"]*norm01(1-smax_test)
-                 + W["err"]*norm01(err_test) + W["om"]*norm01(om_test[:, -1]))
+    # 融合：OOD 头为主（直接建模未知），马氏+softmax+AE 为辅，OpenMax 极弱
+    W = {"ood": 0.50, "mah": 0.25, "smax": 0.12, "err": 0.08, "om": 0.05}
+    fuse_val = (W["ood"]*norm01(ood_val) + W["mah"]*norm01(mah_val)
+                + W["smax"]*norm01(1-smax_val) + W["err"]*norm01(err_val)
+                + W["om"]*norm01(om_val[:, -1]))
+    fuse_test = (W["ood"]*norm01(ood_test) + W["mah"]*norm01(mah_test)
+                 + W["smax"]*norm01(1-smax_test) + W["err"]*norm01(err_test)
+                 + W["om"]*norm01(om_test[:, -1]))
 
     # === 阈值标定：马氏距离 χ² 统计 + 验证集 TNR 校准 ===
     # 旧 LOO 标定有缺陷（训练好的模型对训练样本嵌入在自己类中心附近，伪未知分数=真已知）。
