@@ -354,8 +354,11 @@ def main():
         print(f"    q={q:.2f} thr={thr_q:.3f} | TNR={tnr:.3f} | P={p:.3f} R={r:.3f} F1={f1:.3f} | 检出={int(tp)}/{int(tp+fn)}")
         if f1 > best_f1_scan:
             best_f1_scan, best_thr_scan = f1, thr_q
-    print(f"  -> 扫描最优: thr={best_thr_scan:.3f} F1={best_f1_scan:.3f}")
-    best_thr = best_thr_scan
+    print(f"  -> 扫描最优(仅参考): thr={best_thr_scan:.3f} F1={best_f1_scan:.3f}")
+    # 最终预测用固定 q=0.91 阈值，与 infer.Predictor.evaluate 一致
+    # (扫描最优是在测试集上挑 F1 最高的 q，属 oracle，不用于最终指标)
+    best_thr = float(np.percentile(fuse_test_known, 0.91 * 100))
+    print(f"  -> 采用固定 q=0.91 阈值 thr={best_thr:.3f} (与评估页一致)")
 
     is_unknown_pred = fuse_test > best_thr
     # 已知部分取分类器 argmax
