@@ -58,17 +58,52 @@ def class_weights(labels, n_classes):
     return torch.tensor(w, dtype=torch.float32, device=DEVICE)
 
 
+class FocalLoss(nn.Module):
+    """带权 Focal Loss：对难样本(低置信)聚焦，缓解小类学不动。
+
+    focal = (1-pt)^gamma * CE_w；gamma=2 时小类梯度被放大，U2R/R2L 难样本受益。
+    """
+    def __init__(self, weight, gamma=2.0, ls=0.05):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.ls = ls
+
+    def forward(self, logits, target):
+        ce = nn.functional.cross_entropy(logits, target, weight=self.weight,
+                                          reduction="none", label_smoothing=self.ls)
+        pt = torch.exp(-ce)
+        return (((1 - pt) ** self.gamma) * ce).mean()
+
+
+def oversample_small(X, y, classes, min_n=200):
+    """对样本数 < min_n 的类过采样(重复)到 min_n，缓解 U2R/R2L few-shot。"""
+    import numpy as _np
+    Xo, yo = [X], [y]
+    rng = _np.random.RandomState(42)
+    for i, c in enumerate(classes):
+        idx = _np.where(y == i)[0]
+        if len(idx) == 0 or len(idx) >= min_n:
+            continue
+        n_add = min_n - len(idx)
+        extra = rng.choice(idx, n_add, replace=True)
+        Xo.append(X[extra]); yo.append(y[extra])
+    return _np.vstack(Xo), _np.concatenate(yo)
+
+
 def train_classifier(X, y, in_dim, n_classes):
     import os as _os
     LS = float(_os.environ.get("CLS_LS", "0.05"))      # label smoothing
     LR = float(_os.environ.get("CLS_LR", "2e-3"))      # 学习率
     DROP = float(_os.environ.get("CLS_DROP", "0.4"))   # dropout
+    USE_FOCAL = _os.environ.get("FOCAL", "0") == "1"   # focal loss 开关(默认关:实测拖累OOD)
+    GAMMA = float(_os.environ.get("FOCAL_GAMMA", "2.0"))
     model = Classifier(in_dim, n_classes, p=DROP).to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS_CLS)
     w = class_weights(y, n_classes)
-    crit = nn.CrossEntropyLoss(weight=w, label_smoothing=LS)
-    print(f"  [cls] 配置: ls={LS} lr={LR} drop={DROP} seed={SEED}", flush=True)
+    crit = FocalLoss(w, gamma=GAMMA, ls=LS) if USE_FOCAL else nn.CrossEntropyLoss(weight=w, label_smoothing=LS)
+    print(f"  [cls] 配置: ls={LS} lr={LR} drop={DROP} focal={USE_FOCAL}(γ={GAMMA}) seed={SEED}", flush=True)
     Xt = torch.tensor(X, dtype=torch.float32, device=DEVICE)
     yt = torch.tensor(y, dtype=torch.long, device=DEVICE)
     ds = TensorDataset(Xt, yt)
@@ -198,6 +233,13 @@ def main():
     Xtr_train, ytr_train = Xtr[tr_idx], ytr[tr_idx]
     Xtr_val, ytr_val = Xtr[val_idx], ytr[val_idx]
     print(f"  train_split={len(tr_idx)} val_split={len(val_idx)}")
+
+    # 小类过采样(仅作用于训练子集，验证集不动)
+    import os as _os
+    if _os.environ.get("OVERSAMPLE", "1") == "1":
+        n_before = len(ytr_train)
+        Xtr_train, ytr_train = oversample_small(Xtr_train, ytr_train, known_classes, min_n=200)
+        print(f"  [oversample] {n_before} -> {len(ytr_train)} (小类补到>=200)")
 
     print("\n=== 训练分类器 ===")
     clf = train_classifier(Xtr_train, ytr_train, in_dim, n_classes)
