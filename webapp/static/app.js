@@ -361,6 +361,7 @@ document.getElementById('btn-train').addEventListener('click', async () => {
   const cfg = {
     epochs_cls: parseInt(document.getElementById('cfg-epochs-cls').value) || 40,
     epochs_ae: parseInt(document.getElementById('cfg-epochs-ae').value) || 30,
+    oversample: document.getElementById('cfg-oversample').checked,
     full_ood: document.getElementById('cfg-full-ood').checked,
   };
   btn.disabled = true;

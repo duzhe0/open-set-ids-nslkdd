@@ -56,6 +56,9 @@
           <input type="number" id="cfg-epochs-ae" value="30" min="1" max="200">
         </label>
         <label class="check">
+          <input type="checkbox" id="cfg-oversample" checked> 小类过采样 (已知macro-F1 +0.08)
+        </label>
+        <label class="check">
           <input type="checkbox" id="cfg-full-ood"> 全量 OOD 对照 (马氏/OpenMax/OOD头)
         </label>
         <button id="btn-train" class="primary">开始训练</button>

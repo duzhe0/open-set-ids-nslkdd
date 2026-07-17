@@ -71,6 +71,7 @@ class TrainConfig(BaseModel):
     epochs_cls: int = 40
     epochs_ae: int = 30
     full_ood: bool = False   # 是否跑全量 OOD 对照(马氏/OpenMax/OOD头)
+    oversample: bool = True  # 小类(<200)过采样到200 (实测已知macro-F1 +0.081)
 
 
 def _run_training(cfg: dict):
@@ -79,6 +80,7 @@ def _run_training(cfg: dict):
     T.EPOCHS_CLS = cfg["epochs_cls"]
     T.EPOCHS_AE = cfg["epochs_ae"]
     os.environ["FULL_OOD"] = "1" if cfg["full_ood"] else "0"
+    os.environ["OVERSAMPLE"] = "1" if cfg["oversample"] else "0"
     sink = _train_state["logs"]
     stream = _Stream(sink)
     try:
