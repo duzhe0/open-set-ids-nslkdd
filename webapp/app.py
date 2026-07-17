@@ -14,7 +14,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+for _p in (_ROOT, _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from data_utils import load_csv
 
 app = FastAPI(title="NSL-KDD 开集入侵检测")
@@ -280,10 +284,12 @@ def model_info():
             "lr_cls": 0.002, "lr_ae": 0.001,
             "batch": 512, "seed": 42,
             "optimizer": "AdamW + CosineAnnealingLR",
+            "oversample": "小类(<200)过采样到200 (U2R/R2L few-shot)",
+            "focal_loss": "关 (实测拖累OOD检测)",
         },
         "results": {
-            "unknown_f1": 0.642, "unknown_p": 0.603, "unknown_r": 0.686,
-            "known_acc": 0.892, "overall_acc": 0.791, "tnr": 0.910,
+            "unknown_f1": 0.638, "unknown_p": 0.620, "unknown_r": 0.656,
+            "known_acc": 0.913, "overall_acc": 0.809, "tnr": 0.910,
         },
     }
 
