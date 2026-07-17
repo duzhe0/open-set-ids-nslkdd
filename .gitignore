@@ -7,3 +7,4 @@ diag.log
 .DS_Store
 uv.lock
 models/
+*.log
