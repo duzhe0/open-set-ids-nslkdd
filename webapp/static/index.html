@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NSL-KDD 开集入侵检测</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>NSL-KDD 开集入侵检测</h1>
+    <p class="subtitle">深度学习方案 · <b>MLP 分类器 + 自编码器 + OpenMax</b> · 已知 23 类识别 + 未知攻击检测</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="overview">数据集</button>
+    <button class="tab-btn" data-tab="train">训练</button>
+    <button class="tab-btn" data-tab="evaluate">评估</button>
+    <button class="tab-btn" data-tab="model">模型方案</button>
+  </nav>
+
+  <!-- Tab 1: 数据集概览 -->
+  <section id="tab-overview" class="tab-content active">
+    <div class="card">
+      <h2>数据集概况</h2>
+      <div id="overview-stats" class="stats-grid"></div>
+    </div>
+    <div class="card">
+      <h2>训练集类别分布</h2>
+      <div id="chart-train-dist" class="chart"></div>
+    </div>
+    <div class="card">
+      <h2>未知攻击 (测试集独有)</h2>
+      <p class="hint">测试集含 17 种训练集未见过的攻击，共 3750 条。模型需识别为 "unknown"。</p>
+      <div id="unknown-table"></div>
+    </div>
+    <div class="card warn">
+      <h2>⚠️ 数据极限说明</h2>
+      <p>以下未知攻击在 KDD 原始 41 特征上与已知类 <strong>100% 重叠</strong>，属数据集固有局限，任何基于该数据的方案都无法检出：</p>
+      <div id="overlap-list"></div>
+    </div>
+  </section>
+
+  <!-- Tab 2: 训练 -->
+  <section id="tab-train" class="tab-content">
+    <div class="card">
+      <h2>训练配置</h2>
+      <p class="hint">在 KDDTrain+ 上重新训练 MLP 分类器 + 自编码器,训练完自动评估并覆盖 models/。MPS/GPU 加速,约 1-3 分钟。</p>
+      <div class="train-controls">
+        <label>分类器 epoch
+          <input type="number" id="cfg-epochs-cls" value="40" min="1" max="200">
+        </label>
+        <label>自编码器 epoch
+          <input type="number" id="cfg-epochs-ae" value="30" min="1" max="200">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="cfg-oversample" checked> 小类过采样 (已知macro-F1 +0.08)
+        </label>
+        <label class="check">
+          <input type="checkbox" id="cfg-full-ood"> 全量 OOD 对照 (马氏/OpenMax/OOD头)
+        </label>
+        <button id="btn-train" class="primary">开始训练</button>
+        <span id="train-status" class="status"></span>
+      </div>
+    </div>
+
+    <div id="train-progress" class="card" style="display:none">
+      <h2>训练进度 <span id="train-stage" class="stage-badge"></span></h2>
+      <div class="train-meta">
+        <span id="train-elapsed"></span>
+      </div>
+      <div class="train-meter"><div id="train-meter-fill" class="train-meter-fill"></div></div>
+      <pre id="train-log" class="train-log"></pre>
+    </div>
+
+    <div id="train-results" style="display:none">
+      <div class="card">
+        <h2>训练完成 · 评估指标</h2>
+        <div id="train-stats" class="stats-grid"></div>
+      </div>
+      <div class="card">
+        <h2>未知攻击检出率</h2>
+        <div id="chart-train-unknown" class="chart"></div>
+      </div>
+      <div class="card">
+        <p class="hint">完整评估(含混淆矩阵、已知类明细)见「评估」Tab。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tab 3: 批量评估 -->
+  <section id="tab-evaluate" class="tab-content">
+    <div class="card">
+      <h2>批量评估</h2>
+      <div class="eval-controls">
+        <label>测试集
+          <select id="test-file-select"></select>
+        </label>
+        <button id="btn-evaluate" class="primary">开始评估</button>
+        <span id="eval-status" class="status"></span>
+      </div>
+    </div>
+    <div id="eval-results" style="display:none">
+      <div class="card">
+        <h2>核心指标</h2>
+        <div id="eval-stats" class="stats-grid"></div>
+      </div>
+      <div class="card">
+        <h2>未知攻击检出率</h2>
+        <div id="chart-unknown-detect" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>已知类分类表现</h2>
+        <div id="known-table"></div>
+      </div>
+      <div class="card">
+        <h2>混淆矩阵 (24类: 23已知 + unknown)</h2>
+        <div id="chart-confusion" class="chart tall"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tab 3: 模型方案 -->
+  <section id="tab-model" class="tab-content">
+    <div class="card">
+      <h2>方案总览</h2>
+      <p class="hint" id="model-title"></p>
+      <div class="stats-grid" id="model-stats"></div>
+    </div>
+
+    <div class="card">
+      <h2>整体架构 (数据流)</h2>
+      <div id="arch-diagram" class="arch-diagram"></div>
+    </div>
+
+    <div class="card">
+      <h2>① MLP 分类器 — 已知类识别</h2>
+      <div id="clf-layers" class="layer-list"></div>
+      <p class="hint" id="clf-purpose"></p>
+    </div>
+
+    <div class="card">
+      <h2>② 自编码器 — 未知检测 (OOD 主信号)</h2>
+      <div id="ae-layers" class="layer-list"></div>
+      <p class="hint" id="ae-purpose"></p>
+    </div>
+
+    <div class="card">
+      <h2>OOD 融合判定</h2>
+      <div id="ood-fusion"></div>
+    </div>
+
+    <div class="card">
+      <h2>为什么用 AE 误差作 OOD 主信号?</h2>
+      <ul id="why-ae" class="reason-list"></ul>
+    </div>
+
+    <div class="card">
+      <h2>关键技术决策</h2>
+      <div id="key-decisions"></div>
+    </div>
+
+    <div class="card">
+      <h2>训练配置</h2>
+      <div id="training-config" class="stats-grid"></div>
+    </div>
+  </section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

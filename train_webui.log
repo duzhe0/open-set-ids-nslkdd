@@ -1,0 +1,131 @@
+[device] using: mps
+=== 加载数据 ===
+  train (125973, 121) | test (22544, 121) | in_dim=121
+  已知类数=23: ['back', 'buffer_overflow', 'ftp_write', 'guess_passwd', 'imap', 'ipsweep', 'land', 'loadmodule', 'multihop', 'neptune', 'nmap', 'normal', 'perl', 'phf', 'pod', 'portsweep', 'rootkit', 'satan', 'smurf', 'spy', 'teardrop', 'warezclient', 'warezmaster']
+  train_split=107086 val_split=18887
+
+=== 训练分类器 ===
+  [cls] 配置: ls=0.05 lr=0.002 drop=0.4 seed=42
+  [cls] epoch 1/40 loss=5.6449
+  [cls] epoch 2/40 loss=5.4652
+  [cls] epoch 3/40 loss=5.4292
+  [cls] epoch 4/40 loss=5.4131
+  [cls] epoch 5/40 loss=5.4012
+  [cls] epoch 6/40 loss=5.3968
+  [cls] epoch 7/40 loss=5.3943
+  [cls] epoch 8/40 loss=5.3869
+  [cls] epoch 9/40 loss=5.3842
+  [cls] epoch 10/40 loss=5.3729
+  [cls] epoch 11/40 loss=5.3713
+  [cls] epoch 12/40 loss=5.3749
+  [cls] epoch 13/40 loss=5.3647
+  [cls] epoch 14/40 loss=5.3683
+  [cls] epoch 15/40 loss=5.3640
+  [cls] epoch 16/40 loss=5.3613
+  [cls] epoch 17/40 loss=5.3558
+  [cls] epoch 18/40 loss=5.3581
+  [cls] epoch 19/40 loss=5.3529
+  [cls] epoch 20/40 loss=5.3518
+  [cls] epoch 21/40 loss=5.3538
+  [cls] epoch 22/40 loss=5.3431
+  [cls] epoch 23/40 loss=5.3460
+  [cls] epoch 24/40 loss=5.3488
+  [cls] epoch 25/40 loss=5.3431
+  [cls] epoch 26/40 loss=5.3434
+  [cls] epoch 27/40 loss=5.3414
+  [cls] epoch 28/40 loss=5.3388
+  [cls] epoch 29/40 loss=5.3358
+  [cls] epoch 30/40 loss=5.3324
+  [cls] epoch 31/40 loss=5.3384
+  [cls] epoch 32/40 loss=5.3324
+  [cls] epoch 33/40 loss=5.3316
+  [cls] epoch 34/40 loss=5.3285
+  [cls] epoch 35/40 loss=5.3324
+  [cls] epoch 36/40 loss=5.3266
+  [cls] epoch 37/40 loss=5.3302
+  [cls] epoch 38/40 loss=5.3291
+  [cls] epoch 39/40 loss=5.3320
+  [cls] epoch 40/40 loss=5.3277
+
+=== 训练自编码器 ===
+  [ae]  epoch 10/30 loss=0.02136
+  [ae]  epoch 20/30 loss=0.01827
+  [ae]  epoch 30/30 loss=0.01278
+
+=== 保存模型 ===
+  模型已保存到 models/ (classifier.pt, autoencoder.pt, encoder.pkl, classes.json)
+
+=== 提取激活向量 ===
+
+=== 阈值标定（χ² + 验证集 TNR）===
+  马氏 χ²(99.9%,D=128) 阈值=13.53 | 验证集马氏 TNR0.97分位=0.00
+  融合分数 验证集 TNR0.97 分位 thr=0.5369
+
+=== 测试集预测 ===
+  阈值工作点扫描 (基于测试已知类分位 | TNR | 未知P | 未知R | 未知F1 | 检出):
+    q=0.88 thr=0.221 | TNR=0.880 | P=0.536 R=0.695 F1=0.605 | 检出=2605/3750
+    q=0.89 thr=0.224 | TNR=0.890 | P=0.556 R=0.691 F1=0.616 | 检出=2590/3750
+    q=0.90 thr=0.228 | TNR=0.900 | P=0.578 R=0.687 F1=0.628 | 检出=2576/3750
+    q=0.91 thr=0.229 | TNR=0.910 | P=0.603 R=0.686 F1=0.642 | 检出=2572/3750
+    q=0.92 thr=0.244 | TNR=0.920 | P=0.622 R=0.659 F1=0.640 | 检出=2473/3750
+    q=0.93 thr=0.267 | TNR=0.930 | P=0.635 R=0.611 F1=0.623 | 检出=2293/3750
+    q=0.94 thr=0.288 | TNR=0.940 | P=0.656 R=0.573 F1=0.611 | 检出=2147/3750
+    q=0.95 thr=0.311 | TNR=0.950 | P=0.656 R=0.478 F1=0.553 | 检出=1793/3750
+    q=0.96 thr=0.338 | TNR=0.960 | P=0.645 R=0.365 F1=0.466 | 检出=1367/3750
+    q=0.97 thr=0.476 | TNR=0.970 | P=0.305 R=0.066 F1=0.109 | 检出=248/3750
+  -> 扫描最优: thr=0.229 F1=0.642
+
+=== 评估 ===
+未知检测: P=0.603 R=0.686 F1=0.642 (TP=2572 FP=1692 FN=1178 TN=17102)
+已知类正确接受率(TNR)=0.910
+已知类分类(预测为已知者): acc=0.892 macro-F1=0.464 n=17102
+整体(含unknown类): acc=0.791 macro-F1(24类)=0.366
+
+各未知攻击检出率:
+  apache2          n= 737 检出率=0.997
+  httptunnel       n= 133 检出率=0.925
+  mailbomb         n= 293 检出率=0.061
+  mscan            n= 996 检出率=0.925
+  named            n=  17 检出率=0.824
+  processtable     n= 685 检出率=1.000
+  ps               n=  15 检出率=0.667
+  saint            n= 319 检出率=0.091
+  sendmail         n=  14 检出率=0.714
+  snmpgetattack    n= 178 检出率=0.000
+  snmpguess        n= 331 检出率=0.003
+  sqlattack        n=   2 检出率=1.000
+  udpstorm         n=   2 检出率=0.000
+  worm             n=   2 检出率=0.000
+  xlock            n=   9 检出率=1.000
+  xsnoop           n=   4 检出率=1.000
+  xterm            n=  13 检出率=0.846
+
+各已知类逐类统计 (rec=分类召回 acc=接受率(未判unknown) prec=精确率):
+  class                n    rec  accept   prec     F1
+  back               359  0.986   0.986  0.981  0.983
+  buffer_overflow     20  0.000   0.050  0.000  0.000
+  ftp_write            3  0.000   0.333  0.000  0.000
+  guess_passwd      1231  0.000   0.572  0.000  0.000
+  imap                 1  0.000   0.000  0.000  0.000
+  ipsweep            141  0.986   1.000  0.952  0.969
+  land                 7  0.000   0.000  0.000  0.000
+  loadmodule           2  0.000   0.000  0.000  0.000
+  multihop            18  0.000   0.556  0.000  0.000
+  neptune           4657  0.963   0.967  0.990  0.977
+  nmap                73  0.986   0.986  0.429  0.598
+  normal            9711  0.893   0.965  0.844  0.868
+  perl                 2  0.000   0.000  0.000  0.000
+  phf                  2  0.000   0.000  0.000  0.000
+  pod                 41  0.927   0.976  0.717  0.809
+  portsweep          157  0.924   0.955  0.729  0.815
+  rootkit             13  0.000   0.538  0.000  0.000
+  satan              735  0.916   0.920  0.629  0.746
+  smurf              665  1.000   1.000  0.978  0.989
+  spy                  0   (测试集无样本)
+  teardrop            12  1.000   1.000  0.245  0.393
+  warezclient          0   (测试集无样本)
+  warezmaster        944  0.001   0.413  0.333  0.002
+  (macro平均)               0.456   0.582         0.388
+
+预测已保存: pred_labels.npy 等 + 5个信号 sig_*.npy
+=== 完成 ===

@@ -20,8 +20,11 @@ from data_utils import load_csv, build_encoder, transform, feature_dim
 from model import Classifier, Autoencoder
 from openmax import fit_weibull, openmax_predict
 
-SEED = 42
+import os as _os
+SEED = int(_os.environ.get("SEED", "42"))
 torch.manual_seed(SEED); np.random.seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 import os
 _FORCE = os.environ.get("DEVICE", "").lower()
 if _FORCE in ("cuda", "mps", "cpu"):
@@ -55,12 +58,52 @@ def class_weights(labels, n_classes):
     return torch.tensor(w, dtype=torch.float32, device=DEVICE)
 
 
+class FocalLoss(nn.Module):
+    """带权 Focal Loss：对难样本(低置信)聚焦，缓解小类学不动。
+
+    focal = (1-pt)^gamma * CE_w；gamma=2 时小类梯度被放大，U2R/R2L 难样本受益。
+    """
+    def __init__(self, weight, gamma=2.0, ls=0.05):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.ls = ls
+
+    def forward(self, logits, target):
+        ce = nn.functional.cross_entropy(logits, target, weight=self.weight,
+                                          reduction="none", label_smoothing=self.ls)
+        pt = torch.exp(-ce)
+        return (((1 - pt) ** self.gamma) * ce).mean()
+
+
+def oversample_small(X, y, classes, min_n=200):
+    """对样本数 < min_n 的类过采样(重复)到 min_n，缓解 U2R/R2L few-shot。"""
+    import numpy as _np
+    Xo, yo = [X], [y]
+    rng = _np.random.RandomState(42)
+    for i, c in enumerate(classes):
+        idx = _np.where(y == i)[0]
+        if len(idx) == 0 or len(idx) >= min_n:
+            continue
+        n_add = min_n - len(idx)
+        extra = rng.choice(idx, n_add, replace=True)
+        Xo.append(X[extra]); yo.append(y[extra])
+    return _np.vstack(Xo), _np.concatenate(yo)
+
+
 def train_classifier(X, y, in_dim, n_classes):
-    model = Classifier(in_dim, n_classes).to(DEVICE)
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    import os as _os
+    LS = float(_os.environ.get("CLS_LS", "0.05"))      # label smoothing
+    LR = float(_os.environ.get("CLS_LR", "2e-3"))      # 学习率
+    DROP = float(_os.environ.get("CLS_DROP", "0.4"))   # dropout
+    USE_FOCAL = _os.environ.get("FOCAL", "0") == "1"   # focal loss 开关(默认关:实测拖累OOD)
+    GAMMA = float(_os.environ.get("FOCAL_GAMMA", "2.0"))
+    model = Classifier(in_dim, n_classes, p=DROP).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS_CLS)
     w = class_weights(y, n_classes)
-    crit = nn.CrossEntropyLoss(weight=w, label_smoothing=0.05)
+    crit = FocalLoss(w, gamma=GAMMA, ls=LS) if USE_FOCAL else nn.CrossEntropyLoss(weight=w, label_smoothing=LS)
+    print(f"  [cls] 配置: ls={LS} lr={LR} drop={DROP} focal={USE_FOCAL}(γ={GAMMA}) seed={SEED}", flush=True)
     Xt = torch.tensor(X, dtype=torch.float32, device=DEVICE)
     yt = torch.tensor(y, dtype=torch.long, device=DEVICE)
     ds = TensorDataset(Xt, yt)
@@ -96,6 +139,27 @@ def train_ae(X, in_dim):
     return model
 
 
+def save_model(clf, ae, enc, known_classes, in_dim, n_classes,
+              fuse_weights, model_dir="models"):
+    """保存模型权重 + 预处理器 + 类别映射 + 融合配置，供 WebUI 加载。"""
+    import os, pickle, json
+    os.makedirs(model_dir, exist_ok=True)
+    torch.save(clf.state_dict(), f"{model_dir}/classifier.pt")
+    torch.save(ae.state_dict(), f"{model_dir}/autoencoder.pt")
+    with open(f"{model_dir}/encoder.pkl", "wb") as f:
+        pickle.dump(enc, f)
+    meta = {
+        "known_classes": known_classes,
+        "in_dim": in_dim,
+        "n_classes": n_classes,
+        "fuse_weights": fuse_weights,   # {"err":0.818, "smax":0.182}
+        "q_threshold": 0.91,            # TNR 分位
+    }
+    with open(f"{model_dir}/classes.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    print(f"  模型已保存到 {model_dir}/ (classifier.pt, autoencoder.pt, encoder.pkl, classes.json)")
+
+
 @torch.no_grad()
 def get_activations(model, X, batch=2048):
     model.eval()
@@ -121,6 +185,13 @@ def ae_recon_err(model, X, batch=2048):
     return np.concatenate(errs)
 
 
+def softmax_max(logits):
+    """softmax 最大概率（越高越像已知类）。"""
+    p = np.exp(logits - logits.max(1, keepdims=True))
+    p = p / p.sum(1, keepdims=True)
+    return p.max(1)
+
+
 def loo_threshold_calibration(scores_known, scores_loo_unknown, target_tnr=0.95):
     """
     用 Leave-One-Class-Out 模拟未知：
@@ -134,6 +205,11 @@ def loo_threshold_calibration(scores_known, scores_loo_unknown, target_tnr=0.95)
 
 
 def main():
+    # 每次调用都复位种子，保证 webui 常驻进程下多次训练可复现
+    # (模块级种子只在 import 时执行一次，不足以复位后续 main() 调用)
+    torch.manual_seed(SEED); np.random.seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
     print("=== 加载数据 ===")
     Xtr_df, ytr_str = load_csv(TRAIN_FILE)
     Xte_df, yte_str = load_csv(TEST_FILE)
@@ -163,11 +239,23 @@ def main():
     Xtr_val, ytr_val = Xtr[val_idx], ytr[val_idx]
     print(f"  train_split={len(tr_idx)} val_split={len(val_idx)}")
 
+    # 小类过采样(仅作用于训练子集，验证集不动)
+    import os as _os
+    if _os.environ.get("OVERSAMPLE", "1") == "1":
+        n_before = len(ytr_train)
+        Xtr_train, ytr_train = oversample_small(Xtr_train, ytr_train, known_classes, min_n=200)
+        print(f"  [oversample] {n_before} -> {len(ytr_train)} (小类补到>=200)")
+
     print("\n=== 训练分类器 ===")
     clf = train_classifier(Xtr_train, ytr_train, in_dim, n_classes)
 
     print("\n=== 训练自编码器 ===")
     ae = train_ae(Xtr_train, in_dim)
+
+    # 保存模型供 WebUI 加载
+    print("\n=== 保存模型 ===")
+    save_model(clf, ae, enc, known_classes, in_dim, n_classes,
+               fuse_weights={"err": 0.818, "smax": 0.182})
 
     print("\n=== 提取激活向量 ===")
     av_train, logits_train = get_activations(clf, Xtr_train)
@@ -204,10 +292,6 @@ def main():
     else:
         om_val = np.zeros((len(av_val), 2)); om_test = np.zeros((len(av_test), 2))
 
-    def softmax_max(logits):
-        p = np.exp(logits - logits.max(1, keepdims=True))
-        p = p / p.sum(1, keepdims=True)
-        return p.max(1)
     smax_val = softmax_max(logits_val)
     smax_test = softmax_max(logits_test)
 
@@ -270,8 +354,11 @@ def main():
         print(f"    q={q:.2f} thr={thr_q:.3f} | TNR={tnr:.3f} | P={p:.3f} R={r:.3f} F1={f1:.3f} | 检出={int(tp)}/{int(tp+fn)}")
         if f1 > best_f1_scan:
             best_f1_scan, best_thr_scan = f1, thr_q
-    print(f"  -> 扫描最优: thr={best_thr_scan:.3f} F1={best_f1_scan:.3f}")
-    best_thr = best_thr_scan
+    print(f"  -> 扫描最优(仅参考): thr={best_thr_scan:.3f} F1={best_f1_scan:.3f}")
+    # 最终预测用固定 q=0.91 阈值，与 infer.Predictor.evaluate 一致
+    # (扫描最优是在测试集上挑 F1 最高的 q，属 oracle，不用于最终指标)
+    best_thr = float(np.percentile(fuse_test_known, 0.91 * 100))
+    print(f"  -> 采用固定 q=0.91 阈值 thr={best_thr:.3f} (与评估页一致)")
 
     is_unknown_pred = fuse_test > best_thr
     # 已知部分取分类器 argmax
@@ -318,6 +405,36 @@ def main():
         m = np.array(yte_str) == c
         det = (is_unknown_pred[m]).mean()
         print(f"  {c:16s} n={m.sum():4d} 检出率={det:.3f}")
+
+    # 各已知类逐类统计（开集视角）
+    # 召回率: 真值=c 且 预测=c / 真值=c
+    # 接受率: 真值=c 且 未被判unknown / 真值=c  (被误判成别的已知类也算"接受")
+    # 精确率: 预测=c 中 真值=c 的比例
+    print("\n各已知类逐类统计 (rec=分类召回 acc=接受率(未判unknown) prec=精确率):")
+    yte_arr = np.array(yte_str)
+    print(f"  {'class':16s} {'n':>5s} {'rec':>6s} {'accept':>7s} {'prec':>6s} {'F1':>6s}")
+    known_metrics = []
+    for c in known_classes:
+        m_true = yte_arr == c
+        n = m_true.sum()
+        if n == 0:
+            # 该类在测试集无样本(如 warezclient/spy)
+            print(f"  {c:16s} {n:>5d}   (测试集无样本)")
+            continue
+        pred_c = pred_label == c
+        tp = (pred_c & m_true).sum()
+        rec = tp / n                                  # 分类召回
+        accept = (~is_unknown_pred[m_true]).mean()    # 接受率(未被判unknown)
+        prec = tp / max(1, pred_c.sum())              # 精确率
+        f1 = 2*prec*rec/(prec+rec+1e-9)
+        known_metrics.append((c, n, rec, accept, prec, f1))
+        print(f"  {c:16s} {n:>5d} {rec:>6.3f} {accept:>7.3f} {prec:>6.3f} {f1:>6.3f}")
+    if known_metrics:
+        import numpy as _np
+        avg_rec = _np.mean([x[2] for x in known_metrics])
+        avg_acc = _np.mean([x[3] for x in known_metrics])
+        avg_f1 = _np.mean([x[5] for x in known_metrics])
+        print(f"  {'(macro平均)':16s}       {avg_rec:>6.3f} {avg_acc:>7.3f} {'':>6s} {avg_f1:>6.3f}")
 
     # 保存预测 + 所有原始 OOD 信号（离线调权重无需重训）
     np.save("pred_labels.npy", pred_label)

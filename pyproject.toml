@@ -3,11 +3,13 @@ name = "mytarget"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.139.2",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
     "scikit-learn>=1.9.0",
     "scipy>=1.17.1",
     "torch>=2.13.0",
+    "uvicorn[standard]>=0.51.0",
 ]
 
 [[tool.uv.index]]
